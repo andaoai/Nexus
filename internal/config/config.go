@@ -4,6 +4,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/joho/godotenv"
@@ -17,7 +18,7 @@ type Config struct {
 	DataOwner   string // 数据仓库 owner，默认 andaoai
 	DataRepo    string // 数据仓库名，默认 nexus-data
 	DataBranch  string // 数据仓库分支，默认 main
-	CacheDir    string // 本地 bare 仓库缓存目录，默认 ~/.cache/nexus
+	CacheDir    string // 本地 bare 仓库缓存根目录，默认 <运行目录>/data
 
 	// HTTP 服务
 	Addr string // 默认 :8080
@@ -52,11 +53,11 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("缺少 GITHUB_TOKEN 环境变量（参考 .env.example）")
 	}
 
-	home, err := os.UserHomeDir()
+	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, err
 	}
-	c.CacheDir = getEnv("CACHE_DIR", home+"/.cache/nexus")
+	c.CacheDir = getEnv("CACHE_DIR", filepath.Join(cwd, "data"))
 
 	if name := os.Getenv("EASYTIER_NETWORK_NAME"); name != "" {
 		c.Mesh = MeshConfig{
