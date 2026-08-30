@@ -151,6 +151,53 @@ func registerConversationRoutes(mux *http.ServeMux, st gitstore.Store, eng chatE
 		okJSON(w, map[string]string{"summary": c.Summary})
 	})))
 
+	// 会话绑定对象（MCP 建档后由 nexus-mcp 调用）
+	mux.Handle("POST /api/v1/conversations/{id}/link", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		u := currentUser(r)
+		c, ok := visibleConversation(w, st, *u, r.PathValue("id"))
+		if !ok {
+			return
+		}
+		var body struct {
+			SubjectType string `json:"subject_type"`
+			SubjectID   string `json:"subject_id"`
+		}
+		if err := decode(r, &body); err != nil || !subjectTypeValid(body.SubjectType) || body.SubjectID == "" {
+			errJSON(w, 400, "subject_type 与 subject_id 必填")
+			return
+		}
+		// 校验实体并取名称快照
+		var name string
+		switch body.SubjectType {
+		case "customer":
+			cust, err := st.GetCustomer(body.SubjectID)
+			if err != nil {
+				writeErr(w, err)
+				return
+			}
+			name = cust.Name
+		case "supplier":
+			sup, err := st.GetSupplier(body.SubjectID)
+			if err != nil {
+				writeErr(w, err)
+				return
+			}
+			name = sup.Name
+		}
+		c.SubjectType, c.SubjectID, c.SubjectName = body.SubjectType, body.SubjectID, name
+		c.Messages = append(c.Messages, core.Message{
+			Role: "system", Author: "system",
+			Content: fmt.Sprintf("🔗 AI 已创建并绑定%s「%s」（%s）", subjectCN(body.SubjectType), name, body.SubjectID),
+			At:      time.Now(),
+		})
+		c.UpdatedAt = time.Now()
+		if err := st.UpdateConversation(c, u.ID); err != nil {
+			writeErr(w, err)
+			return
+		}
+		okJSON(w, map[string]string{"status": "linked", "subject_id": body.SubjectID})
+	})))
+
 	// 技能列表
 	mux.Handle("GET /api/v1/skills", auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		skills, err := st.ListSkills()
@@ -205,12 +252,32 @@ func subjectTypeValid(s string) bool {
 	return false
 }
 
+func subjectCN(s string) string {
+	switch s {
+	case "customer":
+		return "客户"
+	case "supplier":
+		return "供应商"
+	}
+	return "主题"
+}
+
+// toolGuidance 聊天工具模式的建档规约（附加在技能提示词后）。
+const toolGuidance = `
+
+## 建档工具使用规约
+对话中出现新客户或供应商信息时：
+1. 先用 search_subjects 按名称查重：命中则 upsert 更新画像并可用 link_subject 把会话绑到该对象；未命中才新建
+2. 信息不全也可先 upsert 建基础画像（名称即可），后续聊天中持续补充更新
+3. upsert 成功后用一句话告知用户建/更新了什么；失败（如无权限）如实转述`
+
 // chatWithEngine 组装上下文 → 调引擎 → 追加消息 → 落库。
 func chatWithEngine(ctx context.Context, st gitstore.Store, eng chatEngine, c *core.Conversation, userID, content string) (any, error) {
 	systemPrompt := defaultSkill
 	if skill, err := st.GetSkill(c.Skill); err == nil && skill != "" {
 		systemPrompt = skill
 	}
+	systemPrompt += toolGuidance
 	if ctxInfo := subjectContext(st, c); ctxInfo != "" {
 		systemPrompt += "\n\n当前对象信息：\n" + ctxInfo
 	}
@@ -219,9 +286,16 @@ func chatWithEngine(ctx context.Context, st gitstore.Store, eng chatEngine, c *c
 	}
 
 	userMsg := core.Message{Role: "user", Author: userID, Content: content, At: time.Now()}
-	aiText, sessionID, err := eng.Chat(ctx, systemPrompt, content, c.ClaudeSessionID)
+	aiText, sessionID, err := eng.Chat(ctx, systemPrompt, content, c.ClaudeSessionID,
+		agent.ChatOpts{ConvID: c.ID, UserID: userID})
 	if err != nil {
 		return nil, err
+	}
+
+	// AI 执行期间 MCP 工具可能已改过会话（如 link 绑定建档对象），
+	// 重新拉取最新状态再追加消息，避免用旧快照覆盖掉工具的改动
+	if fresh, err := st.GetConversation(c.ID); err == nil {
+		*c = fresh
 	}
 
 	aiMsg := core.Message{Role: "assistant", Author: "ai", Content: aiText, At: time.Now()}

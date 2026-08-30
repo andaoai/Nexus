@@ -5,6 +5,7 @@ all: frontend build
 
 build:
 	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/nexus-server ./cmd/server
+	CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o bin/nexus-mcp ./cmd/nexus-mcp
 
 frontend:
 	cd web && npm install && npm run build

@@ -7,13 +7,14 @@ import (
 	"os"
 	"time"
 
+	"github.com/andaoai/Nexus/internal/agent"
 	"github.com/andaoai/Nexus/internal/core"
 	"github.com/andaoai/Nexus/internal/gitstore"
 )
 
 // chatEngine AI 聊天引擎接口（*agent.Engine 实现）。
 type chatEngine interface {
-	Chat(ctx context.Context, systemPrompt, message, sessionID string) (result, newSessionID string, err error)
+	Chat(ctx context.Context, systemPrompt, message, sessionID string, opts ...agent.ChatOpts) (result, newSessionID string, err error)
 }
 
 // Mux 构建全部路由。store/引擎 依赖注入，便于测试。

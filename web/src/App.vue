@@ -197,6 +197,7 @@ async function send() {
     chatBusy.value = false
     nextTick(scrollChat)
     loadConversations()
+    refresh() // AI 可能自动建档，同步客户/供应商列表
   }
 }
 async function summarize() {
@@ -421,7 +422,13 @@ const matchStatuses = ['待确认', '已确认', '已签约', '已放弃']
 
       <section class="card chat-panel" v-if="activeConv">
         <div class="conv-head">
-          <b>{{ activeConv.title || subjectLabel(activeConv) }}</b>
+          <div>
+            <b>{{ activeConv.title || subjectLabel(activeConv) }}</b>
+            <span v-if="activeConv.subject_name" class="tag gray" style="margin-left:8px">
+              {{ activeConv.subject_type === 'customer' ? '客户' : '供应商' }} · {{ activeConv.subject_name }}
+            </span>
+            <span v-else class="muted" style="font-size:12px;margin-left:8px">未绑定对象 · 聊到客户/供应商时 AI 会自动建档</span>
+          </div>
           <button class="btn" :disabled="chatBusy || !activeConv.messages.length" @click="summarize">
             {{ chatBusy ? 'AI 思考中…' : '生成进展摘要' }}
           </button>

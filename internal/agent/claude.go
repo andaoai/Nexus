@@ -61,18 +61,42 @@ func (e *Engine) Available() error {
 	return nil
 }
 
+// ChatOpts 一次聊天调用的会话上下文。
+type ChatOpts struct {
+	ConvID string // 会话 id（传给 MCP 工具做自动绑定）
+	UserID string // 会话 owner（MCP 工具以该身份调 API）
+}
+
 // Chat 发送一条消息并返回 AI 回复与新 session id。
 // systemPrompt 注入 skill + 上下文；sessionID 为空表示新会话。
-func (e *Engine) Chat(ctx context.Context, systemPrompt, message, sessionID string) (result, newSessionID string, err error) {
+// 本机存在 nexus-mcp 伴生二进制时启用工具模式（AI 可自动建档）。
+func (e *Engine) Chat(ctx context.Context, systemPrompt, message, sessionID string, opts ...ChatOpts) (result, newSessionID string, err error) {
 	if _, err := exec.LookPath(e.cfg.Bin); err != nil {
 		return "", "", fmt.Errorf("%w: 本机未找到 %s，请安装 claude CLI", ErrUnavailable, e.cfg.Bin)
 	}
 
 	args := []string{"-p", message, "--output-format", "json", "--bare",
-		"--append-system-prompt", systemPrompt,
-		"--disallowedTools", "*", "--max-turns", "1"}
+		"--append-system-prompt", systemPrompt}
 	if sessionID != "" {
 		args = append(args, "--resume", sessionID)
+	}
+
+	mcpCfg, err := e.mcpConfig(opts)
+	if err != nil {
+		return "", "", err
+	}
+	if mcpCfg != nil {
+		// 工具模式：白名单只放 MCP 工具（headless 下其余工具自动拒绝），允许多轮工具循环
+		cfgFile, cleanup, err := writeMCPConfig(mcpCfg)
+		if err != nil {
+			return "", "", err
+		}
+		defer cleanup()
+		args = append(args, "--mcp-config", cfgFile, "--allowedTools", "mcp__nexus",
+			"--max-turns", "10")
+	} else {
+		// 纯聊天模式：禁用全部工具
+		args = append(args, "--disallowedTools", "*", "--max-turns", "1")
 	}
 
 	cmd := exec.CommandContext(ctx, e.cfg.Bin, args...)

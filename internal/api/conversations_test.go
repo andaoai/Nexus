@@ -70,7 +70,7 @@ type fakeEngine struct {
 	newSession string
 }
 
-func (f *fakeEngine) Chat(_ context.Context, systemPrompt, message, sessionID string) (string, string, error) {
+func (f *fakeEngine) Chat(_ context.Context, systemPrompt, message, sessionID string, _ ...agent.ChatOpts) (string, string, error) {
 	if f.failWith != nil {
 		return "", "", f.failWith
 	}

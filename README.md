@@ -68,6 +68,7 @@ cd web && npm install && npm run dev
 | GET | /conversations/{id} | 会话详情（含全部消息） | owner 或管理员 |
 | POST | /conversations/{id}/chat | 发消息 → claude CLI 回复 → 落库 | owner 或管理员 |
 | POST | /conversations/{id}/summary | AI 生成进展摘要（管理员统筹用） | owner 或管理员 |
+| POST | /conversations/{id}/link | 绑定会话对象（nexus-mcp 建档后自动调用） | owner 或管理员 |
 | GET | /skills | AI 技能列表（skills/*.md 实时读数据仓库） | 全部 |
 | PUT | /admin/skills/{name} | 新建/更新技能 | 管理员 |
 | POST | /admin/sync | 手动同步数据仓库 | 管理员 |
@@ -86,5 +87,5 @@ cd web && npm install && npm run dev
 | v0.2.0 | JWT 认证、updated_at 乐观锁 |
 | v0.3.0 | Element Plus 三栏布局完整前端 |
 | v0.4.0 | AI 聊天：claude CLI 无头多轮会话、skills 提示词沉淀、进展摘要与全局统筹（已上线） |
-| v0.5.0 | stream-json 流式回复、消息数阈值自动摘要 |
+| v0.5.0 | AI 自动建档（MCP 工具调用：聊天中自动创建/更新客户、供应商画像，已上线）；stream-json 流式回复 |
 | v1.0.0 | 安卓 App、业务流程闭环 |
