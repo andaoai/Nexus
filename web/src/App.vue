@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import {
   api, ApiError, USERS, currentUser, setCurrentUser,
   type Customer, type Supplier, type Solution, type Match,
+  type Conversation, type ChatMessage, type Skill,
 } from './api'
 
-const tab = ref<'dashboard' | 'customers' | 'suppliers' | 'solutions' | 'matches'>('dashboard')
+const tab = ref<'dashboard' | 'customers' | 'suppliers' | 'solutions' | 'matches' | 'chat'>('dashboard')
 const uid = ref(currentUser())
 const error = ref('')
 const isAdmin = computed(() => USERS.find(u => u.id === uid.value)?.role === 'admin')
@@ -132,6 +133,111 @@ function ownerName(id: string) { return USERS.find(u => u.id === id)?.name || id
 function solutionName(id: string) { return solutions.value.find(s => s.id === id)?.name || id }
 function customerName(id: string) { return customers.value.find(c => c.id === id)?.name || id }
 
+// ---- AI 聊天 ----
+const conversations = ref<Conversation[]>([])
+const allConvs = ref(false) // admin 全局视图
+const activeConv = ref<Conversation | null>(null)
+const chatInput = ref('')
+const chatBusy = ref(false)
+const convModal = ref<HTMLDialogElement>()
+const convForm = ref<{ subject_type: string; subject_id: string; title: string; skill: string }>(
+  { subject_type: 'general', subject_id: '', title: '', skill: '' }
+)
+const skills = ref<Skill[]>([])
+const skillModal = ref<HTMLDialogElement>()
+const skillForm = ref<{ name: string; content: string }>({ name: '', content: '' })
+const chatWindow = ref<HTMLElement>()
+
+async function loadConversations() {
+  await run(async () => {
+    conversations.value = (await api.listConversations(allConvs.value)) || []
+  })
+}
+async function openConv(c: Conversation) {
+  await run(async () => {
+    activeConv.value = await api.getConversation(c.id)
+    nextTick(scrollChat)
+  })
+}
+function scrollChat() {
+  if (chatWindow.value) chatWindow.value.scrollTop = chatWindow.value.scrollHeight
+}
+function newConversation() {
+  convForm.value = { subject_type: 'general', subject_id: '', title: '', skill: '' }
+  loadSkills().then(() => convModal.value?.showModal())
+}
+async function saveConversation() {
+  await run(async () => {
+    const c = await api.createConversation({
+      subject_type: convForm.value.subject_type,
+      subject_id: convForm.value.subject_id || undefined,
+      title: convForm.value.title || undefined,
+      skill: convForm.value.skill || undefined,
+    })
+    convModal.value?.close()
+    await loadConversations()
+    await openConv(c)
+  })
+}
+async function send() {
+  const content = chatInput.value.trim()
+  if (!content || !activeConv.value || chatBusy.value) return
+  chatBusy.value = true
+  error.value = ''
+  // 本地先显示用户消息，AI 回复到达后整体刷新
+  activeConv.value.messages.push({ role: 'user', author: uid.value, content, at: new Date().toISOString() })
+  chatInput.value = ''
+  nextTick(scrollChat)
+  try {
+    const res = await api.sendMessage(activeConv.value.id, content)
+    activeConv.value.messages.push(res.ai_message)
+  } catch (e) {
+    error.value = e instanceof ApiError ? e.message : String(e)
+  } finally {
+    chatBusy.value = false
+    nextTick(scrollChat)
+    loadConversations()
+  }
+}
+async function summarize() {
+  if (!activeConv.value) return
+  chatBusy.value = true
+  await run(async () => {
+    const res = await api.refreshSummary(activeConv.value!.id)
+    activeConv.value!.summary = res.summary
+    await loadConversations()
+  })
+  chatBusy.value = false
+}
+async function loadSkills() {
+  await run(async () => { skills.value = (await api.listSkills()) || [] })
+}
+function editSkill(s?: Skill) {
+  skillForm.value = s ? { name: s.name, content: s.content } : { name: '', content: '' }
+  skillModal.value?.showModal()
+}
+async function saveSkill() {
+  await run(async () => {
+    await api.putSkill(skillForm.value.name, skillForm.value.content)
+    skillModal.value?.close()
+    await loadSkills()
+  })
+}
+function subjectLabel(c: Conversation) {
+  return c.subject_name || (c.subject_type === 'general' ? '通用' : c.subject_id)
+}
+function msgClass(m: ChatMessage) {
+  return m.role === 'user' ? 'me' : m.role === 'assistant' ? 'ai' : 'sys'
+}
+function switchTab(t: typeof tab.value) {
+  tab.value = t
+  if (t === 'chat') { allConvs.value = false; loadConversations() }
+}
+function toggleAllConvs() {
+  allConvs.value = !allConvs.value
+  loadConversations()
+}
+
 function scoreTag(score: number) {
   if (score >= 80) return 'green'
   if (score >= 60) return 'yellow'
@@ -152,6 +258,7 @@ const matchStatuses = ['待确认', '已确认', '已签约', '已放弃']
       <button :class="{ active: tab === 'suppliers' }" @click="tab = 'suppliers'">供应商</button>
       <button :class="{ active: tab === 'solutions' }" @click="tab = 'solutions'">方案</button>
       <button :class="{ active: tab === 'matches' }" @click="tab = 'matches'">匹配</button>
+      <button :class="{ active: tab === 'chat' }" @click="switchTab('chat')">AI 聊天</button>
     </nav>
     <select :value="uid" @change="switchUser(($event.target as HTMLSelectElement).value)">
       <option value="" disabled>选择用户…</option>
@@ -159,7 +266,7 @@ const matchStatuses = ['待确认', '已确认', '已签约', '已放弃']
     </select>
   </header>
 
-  <main class="container">
+  <main class="container" v-if="tab !== 'chat'">
     <p v-if="error" class="error-msg">{{ error }}</p>
     <p v-if="!uid" class="muted">请先在右上角选择登录用户（演示：user1=管理员，user2/user3=客户经理）。</p>
 
@@ -272,6 +379,76 @@ const matchStatuses = ['待确认', '已确认', '已签约', '已放弃']
     </section>
   </main>
 
+  <!-- AI 聊天 -->
+  <main class="container" v-if="tab === 'chat'">
+    <p v-if="error" class="error-msg">{{ error }}</p>
+    <p v-if="!uid" class="muted">请先在右上角选择登录用户。</p>
+    <div v-else class="chat-layout">
+      <aside class="card conv-list">
+        <div class="conv-head">
+          <b>会话</b>
+          <label v-if="isAdmin" class="muted" style="font-size:12px">
+            <input type="checkbox" :checked="allConvs" @change="toggleAllConvs" /> 全局视图
+          </label>
+        </div>
+        <button class="btn primary" style="width:100%" @click="newConversation">+ 新建会话</button>
+        <div
+          v-for="c in conversations" :key="c.id"
+          class="conv-item" :class="{ active: activeConv?.id === c.id }"
+          @click="openConv(c)"
+        >
+          <b>{{ c.title || subjectLabel(c) }}</b>
+          <span class="muted" style="font-size:12px">
+            {{ subjectLabel(c) }} · {{ ownerName(c.owner) }}
+          </span>
+          <span v-if="c.summary" class="muted conv-summary">{{ c.summary }}</span>
+        </div>
+        <p v-if="!conversations.length" class="muted" style="text-align:center">暂无会话</p>
+        <!-- 技能管理（admin） -->
+        <template v-if="isAdmin">
+          <hr />
+          <div class="conv-head">
+            <b>AI 技能</b>
+            <button class="btn" style="padding:2px 8px" @click="editSkill()">+ 新增</button>
+          </div>
+          <div v-for="s in skills" :key="s.name" class="conv-item" @click="editSkill(s)">
+            <b>{{ s.name }}</b>
+            <span class="muted conv-summary">{{ s.content.slice(0, 40) }}</span>
+          </div>
+          <p v-if="!skills.length" class="muted" style="text-align:center;font-size:12px">未配置技能（使用内置默认）</p>
+        </template>
+      </aside>
+
+      <section class="card chat-panel" v-if="activeConv">
+        <div class="conv-head">
+          <b>{{ activeConv.title || subjectLabel(activeConv) }}</b>
+          <button class="btn" :disabled="chatBusy || !activeConv.messages.length" @click="summarize">
+            {{ chatBusy ? 'AI 思考中…' : '生成进展摘要' }}
+          </button>
+        </div>
+        <div v-if="activeConv.summary" class="summary-box">📋 {{ activeConv.summary }}</div>
+        <div class="chat-window" ref="chatWindow">
+          <div v-for="(m, i) in activeConv.messages" :key="i" class="bubble" :class="msgClass(m)">
+            <div class="bubble-content">{{ m.content }}</div>
+            <span v-if="m.role !== 'system'" class="bubble-meta">{{ m.role === 'user' ? ownerName(m.author) : 'AI' }}</span>
+          </div>
+        </div>
+        <div class="chat-input-row">
+          <textarea
+            v-model="chatInput" rows="2" placeholder="输入消息，Enter 发送（Shift+Enter 换行）"
+            @keydown.enter.exact.prevent="send" :disabled="chatBusy"
+          ></textarea>
+          <button class="btn primary" @click="send" :disabled="chatBusy || !chatInput.trim()">
+            {{ chatBusy ? '…' : '发送' }}
+          </button>
+        </div>
+      </section>
+      <section class="card chat-panel" v-else style="display:flex;align-items:center;justify-content:center;color:var(--muted)">
+        ← 选择左侧会话，或新建一个开始与 AI 聊天
+      </section>
+    </div>
+  </main>
+
   <!-- 客户弹窗 -->
   <dialog ref="custModal" class="modal">
     <h3>{{ custForm.id ? '编辑客户' : '新建客户' }}</h3>
@@ -365,6 +542,56 @@ const matchStatuses = ['待确认', '已确认', '已签约', '已放弃']
     <div class="actions">
       <button class="btn" @click="matchModal?.close()">关闭</button>
       <button class="btn primary" @click="saveMatch" :disabled="!matchForm.customer_id || !matchForm.solution_id">计算匹配度并创建</button>
+    </div>
+  </dialog>
+
+  <!-- 新建会话弹窗 -->
+  <dialog ref="convModal" class="modal">
+    <h3>新建 AI 会话</h3>
+    <div class="form-grid">
+      <div><label>会话主题</label>
+        <select v-model="convForm.subject_type" @change="convForm.subject_id = ''">
+          <option value="general">通用</option>
+          <option value="customer">客户</option>
+          <option value="supplier">供应商</option>
+        </select>
+      </div>
+      <div v-if="convForm.subject_type === 'customer'"><label>客户</label>
+        <select v-model="convForm.subject_id">
+          <option value=""></option>
+          <option v-for="c in customers" :key="c.id" :value="c.id">{{ c.name }}</option>
+        </select>
+      </div>
+      <div v-if="convForm.subject_type === 'supplier'"><label>供应商</label>
+        <select v-model="convForm.subject_id">
+          <option value=""></option>
+          <option v-for="s in suppliers" :key="s.id" :value="s.id">{{ s.name }}</option>
+        </select>
+      </div>
+      <div class="full"><label>会话标题（可选）</label><input v-model="convForm.title" /></div>
+      <div class="full"><label>AI 技能（可选，默认使用内置技能）</label>
+        <select v-model="convForm.skill">
+          <option value=""></option>
+          <option v-for="s in skills" :key="s.name" :value="s.name">{{ s.name }}</option>
+        </select>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="btn" @click="convModal?.close()">取消</button>
+      <button class="btn primary" @click="saveConversation">创建</button>
+    </div>
+  </dialog>
+
+  <!-- 技能编辑弹窗 -->
+  <dialog ref="skillModal" class="modal">
+    <h3>AI 技能（提示词）</h3>
+    <div class="form-grid">
+      <div class="full"><label>技能名 *（字母数字-_）</label><input v-model="skillForm.name" :disabled="!!skills.find(s => s.name === skillForm.name)" /></div>
+      <div class="full"><label>提示词内容 *（Markdown）</label><textarea v-model="skillForm.content" rows="8"></textarea></div>
+    </div>
+    <div class="actions">
+      <button class="btn" @click="skillModal?.close()">取消</button>
+      <button class="btn primary" @click="saveSkill" :disabled="!skillForm.name || !skillForm.content.trim()">保存</button>
     </div>
   </dialog>
 </template>

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +29,12 @@ type FileOp struct {
 	Delete bool
 }
 
+// Skill AI 技能：一段提示词文档，聊天时注入 system prompt。
+type Skill struct {
+	Name    string `json:"name"`
+	Content string `json:"content"`
+}
+
 // Store 数据存储接口（api 层依赖此接口，便于测试注入）。
 type Store interface {
 	ListCustomers(owner string) ([]core.Customer, error)
@@ -49,6 +56,17 @@ type Store interface {
 	GetMatch(id string) (core.Match, error)
 	CreateMatch(m core.Match, actor string) error
 	UpdateMatch(m core.Match, actor string) error
+
+	// 聊天会话（conversations/<owner>/<id>.json，整文件覆盖提交）
+	ListConversations(owner string) ([]core.Conversation, error)
+	GetConversation(id string) (core.Conversation, error)
+	CreateConversation(c core.Conversation, actor string) error
+	UpdateConversation(c core.Conversation, actor string) error
+
+	// AI 技能（skills/<name>.md，管理员维护）
+	ListSkills() ([]Skill, error)
+	GetSkill(name string) (string, error)
+	PutSkill(name, content, actor string) error
 
 	// Counts 仪表盘统计。
 	Counts() (customers, suppliers, solutions, matches, deals int)
@@ -232,6 +250,9 @@ func customerPath(c core.Customer) string { return dirCustomers + "/" + c.Owner 
 func supplierPath(s core.Supplier) string { return dirSuppliers + "/" + s.ID + ".json" }
 func solutionPath(s core.Solution) string { return dirSolutions + "/" + s.ID + ".json" }
 func matchPath(m core.Match) string       { return dirMatches + "/" + m.ID + ".json" }
+func conversationPath(c core.Conversation) string {
+	return dirConversations + "/" + c.Owner + "/" + c.ID + ".json"
+}
 
 func marshal(v any) ([]byte, error) { return core.JSON(v) }
 
@@ -371,6 +392,119 @@ func (s *gitStore) UpdateMatch(m core.Match, actor string) error {
 
 func (s *gitStore) Counts() (int, int, int, int, int) {
 	return s.ix.Counts()
+}
+
+// ---- Conversation ----
+
+func (s *gitStore) ListConversations(owner string) ([]core.Conversation, error) {
+	return s.ix.ListConversations(owner), nil
+}
+
+func (s *gitStore) GetConversation(id string) (core.Conversation, error) {
+	if c, ok := s.ix.GetConversation(id); ok {
+		return c, nil
+	}
+	return core.Conversation{}, ErrNotFound
+}
+
+func (s *gitStore) CreateConversation(c core.Conversation, actor string) error {
+	data, err := marshal(c)
+	if err != nil {
+		return err
+	}
+	return s.commitAndPush(context.Background(), []FileOp{{Path: conversationPath(c), Data: data}},
+		actor, fmt.Sprintf("%s: create conversation %s", actor, c.ID))
+}
+
+// UpdateConversation 整文件覆盖提交：追加消息 / 摘要 / session_id 都走这里。
+func (s *gitStore) UpdateConversation(c core.Conversation, actor string) error {
+	if _, ok := s.ix.GetConversation(c.ID); !ok {
+		return ErrNotFound
+	}
+	data, err := marshal(c)
+	if err != nil {
+		return err
+	}
+	return s.commitAndPush(context.Background(), []FileOp{{Path: conversationPath(c), Data: data}},
+		actor, fmt.Sprintf("%s: update conversation %s", actor, c.ID))
+}
+
+// ---- Skill（skills/<name>.md，每次请求实时读 head rev，保证最新）----
+
+func skillPath(name string) string { return "skills/" + name + ".md" }
+
+// skillName 校验技能名：仅允许字母数字-_，防路径穿越。
+func skillName(raw string) (string, error) {
+	raw = strings.TrimSpace(strings.TrimSuffix(strings.TrimSuffix(raw, ".md"), ".md"))
+	if raw == "" || len(raw) > 64 {
+		return "", fmt.Errorf("技能名非法")
+	}
+	for _, r := range raw {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_') {
+			return "", fmt.Errorf("技能名只能包含字母数字-_")
+		}
+	}
+	return raw, nil
+}
+
+func (s *gitStore) ListSkills() ([]Skill, error) {
+	ctx := context.Background()
+	rev := s.repo.HeadRev(ctx)
+	if rev == "" {
+		return nil, nil
+	}
+	out, err := gitOut(ctx, s.repo.dir, "ls-tree", "--name-only", rev, "skills/")
+	if err != nil {
+		return nil, err
+	}
+	var skills []Skill
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		base := filepath.Base(line)
+		name, err := skillName(base)
+		if err != nil {
+			continue
+		}
+		content, err := s.GetSkill(name)
+		if err != nil {
+			continue
+		}
+		skills = append(skills, Skill{Name: name, Content: content})
+	}
+	return skills, nil
+}
+
+func (s *gitStore) GetSkill(name string) (string, error) {
+	name, err := skillName(name)
+	if err != nil {
+		return "", err
+	}
+	ctx := context.Background()
+	rev := s.repo.HeadRev(ctx)
+	if rev == "" {
+		return "", ErrNotFound
+	}
+	out, err := gitOutBytes(ctx, s.repo.dir, "cat-file", "blob", rev+":"+skillPath(name))
+	if err != nil {
+		return "", ErrNotFound
+	}
+	return string(out), nil
+}
+
+func (s *gitStore) PutSkill(name, content, actor string) error {
+	name, err := skillName(name)
+	if err != nil {
+		return err
+	}
+	verb := "create"
+	if _, err := s.GetSkill(name); err == nil {
+		verb = "update"
+	}
+	return s.commitAndPush(context.Background(),
+		[]FileOp{{Path: skillPath(name), Data: []byte(content)}},
+		actor, fmt.Sprintf("%s: %s skill %s", actor, verb, name))
 }
 
 func mustMarshal(v any) []byte {

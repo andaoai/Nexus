@@ -23,8 +23,20 @@ type Config struct {
 	// HTTP 服务
 	Addr string // 默认 :8080
 
+	// AI 聊天引擎（claude CLI 无头模式；换 DeepSeek/火山云等 Anthropic 兼容
+	// 网关只需改这三个值，通过 ANTHROPIC_BASE_URL/AUTH_TOKEN/MODEL 注入子进程）
+	LLM LLMConfig
+
 	// EasyTier 组网（未配置则不启用）
 	Mesh MeshConfig
+}
+
+// LLMConfig claude CLI 聊天引擎配置。
+type LLMConfig struct {
+	Bin     string // claude 可执行文件，默认 "claude"
+	BaseURL string // Anthropic 兼容网关地址，空 = 用 claude 自身配置
+	APIKey  string // 网关 token（Bearer），空 = 用 claude 自身登录态
+	Model   string // 模型名，空 = 用 claude 默认
 }
 
 // MeshConfig EasyTier 内嵌组网配置。
@@ -47,6 +59,12 @@ func Load() (*Config, error) {
 		DataRepo:    getEnv("NEXUS_DATA_REPO", "nexus-data"),
 		DataBranch:  getEnv("NEXUS_DATA_BRANCH", "main"),
 		Addr:        getEnv("ADDR", ":8080"),
+		LLM: LLMConfig{
+			Bin:     getEnv("CLAUDE_BIN", "claude"),
+			BaseURL: os.Getenv("LLM_BASE_URL"),
+			APIKey:  os.Getenv("LLM_API_KEY"),
+			Model:   os.Getenv("LLM_MODEL"),
+		},
 	}
 
 	if c.GitHubToken == "" {

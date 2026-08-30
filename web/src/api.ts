@@ -105,6 +105,34 @@ export interface MatchCreateReq {
   desired_stack: string[]
 }
 
+export interface ChatMessage {
+  role: 'user' | 'assistant' | 'system'
+  author: string
+  content: string
+  at: string
+}
+
+export interface Conversation {
+  id: string
+  owner: string
+  subject_type: 'customer' | 'supplier' | 'general'
+  subject_id: string
+  subject_name: string
+  title: string
+  skill: string
+  claude_session_id: string
+  summary: string
+  summary_at: string
+  messages: ChatMessage[]
+  created_at: string
+  updated_at: string
+}
+
+export interface Skill {
+  name: string
+  content: string
+}
+
 export const api = {
   listCustomers: () => call<Customer[]>('GET', '/api/v1/customers'),
   createCustomer: (c: Partial<Customer>) => call<Customer>('POST', '/api/v1/customers', c),
@@ -128,4 +156,22 @@ export const api = {
       'GET',
       '/api/v1/stats/dashboard'
     ),
+
+  // AI 聊天
+  listConversations: (all = false) =>
+    call<Conversation[]>('GET', `/api/v1/conversations${all ? '?all=1' : ''}`),
+  getConversation: (id: string) => call<Conversation>('GET', `/api/v1/conversations/${id}`),
+  createConversation: (c: { subject_type: string; subject_id?: string; title?: string; skill?: string }) =>
+    call<Conversation>('POST', '/api/v1/conversations', c),
+  sendMessage: (id: string, content: string) =>
+    call<{ user_message: ChatMessage; ai_message: ChatMessage }>(
+      'POST', `/api/v1/conversations/${id}/chat`, { content }
+    ),
+  refreshSummary: (id: string) =>
+    call<{ summary: string }>('POST', `/api/v1/conversations/${id}/summary`),
+
+  // AI 技能
+  listSkills: () => call<Skill[]>('GET', '/api/v1/skills'),
+  putSkill: (name: string, content: string) =>
+    call('PUT', `/api/v1/admin/skills/${encodeURIComponent(name)}`, { content }),
 }

@@ -18,27 +18,30 @@ import (
 
 // entityKind 实体类型与仓库目录的映射。
 const (
-	dirCustomers = "customers"
-	dirSuppliers = "suppliers"
-	dirSolutions = "solutions"
-	dirMatches   = "matches"
+	dirCustomers    = "customers"
+	dirSuppliers    = "suppliers"
+	dirSolutions    = "solutions"
+	dirMatches      = "matches"
+	dirConversations = "conversations"
 )
 
 type index struct {
-	mu        sync.RWMutex
-	rev       string
-	customers map[string]core.Customer
-	suppliers map[string]core.Supplier
-	solutions map[string]core.Solution
-	matches   map[string]core.Match
+	mu            sync.RWMutex
+	rev           string
+	customers     map[string]core.Customer
+	suppliers     map[string]core.Supplier
+	solutions     map[string]core.Solution
+	matches       map[string]core.Match
+	conversations map[string]core.Conversation
 }
 
 func newIndex() *index {
 	return &index{
-		customers: map[string]core.Customer{},
-		suppliers: map[string]core.Supplier{},
-		solutions: map[string]core.Solution{},
-		matches:   map[string]core.Match{},
+		customers:     map[string]core.Customer{},
+		suppliers:     map[string]core.Supplier{},
+		solutions:     map[string]core.Solution{},
+		matches:       map[string]core.Match{},
+		conversations: map[string]core.Conversation{},
 	}
 }
 
@@ -78,6 +81,7 @@ func (ix *index) Rebuild(ctx context.Context, repo *Repo, rev string) error {
 	ix.suppliers = fresh.suppliers
 	ix.solutions = fresh.solutions
 	ix.matches = fresh.matches
+	ix.conversations = fresh.conversations
 	ix.rev = rev
 	return nil
 }
@@ -107,6 +111,11 @@ func (ix *index) load(path string, data []byte) {
 		var m core.Match
 		if json.Unmarshal(data, &m) == nil && m.ID != "" {
 			ix.matches[m.ID] = m
+		}
+	case dirConversations:
+		var c core.Conversation
+		if json.Unmarshal(data, &c) == nil && c.ID != "" {
+			ix.conversations[c.ID] = c
 		}
 	}
 }
@@ -193,6 +202,27 @@ func (ix *index) GetMatch(id string) (core.Match, bool) {
 	return m, ok
 }
 
+// ListConversations 会话列表。owner 为空返回全部（管理员视图）。
+func (ix *index) ListConversations(owner string) []core.Conversation {
+	ix.mu.RLock()
+	defer ix.mu.RUnlock()
+	var out []core.Conversation
+	for _, c := range ix.conversations {
+		if owner == "" || c.Owner == owner {
+			out = append(out, c)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].UpdatedAt.After(out[j].UpdatedAt) })
+	return out
+}
+
+func (ix *index) GetConversation(id string) (core.Conversation, bool) {
+	ix.mu.RLock()
+	defer ix.mu.RUnlock()
+	c, ok := ix.conversations[id]
+	return c, ok
+}
+
 func (ix *index) Counts() (customers, suppliers, solutions, matches, deals int) {
 	ix.mu.RLock()
 	defer ix.mu.RUnlock()
@@ -233,6 +263,8 @@ func (ix *index) deleteByPath(path string) {
 		delete(ix.solutions, id)
 	case dirMatches:
 		delete(ix.matches, id)
+	case dirConversations:
+		delete(ix.conversations, id)
 	}
 }
 

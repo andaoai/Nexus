@@ -16,18 +16,22 @@ import (
 
 // fakeStore 内存实现，用于 HTTP 层测试。
 type fakeStore struct {
-	customers map[string]core.Customer
-	suppliers map[string]core.Supplier
-	solutions map[string]core.Solution
-	matches   map[string]core.Match
+	customers     map[string]core.Customer
+	suppliers     map[string]core.Supplier
+	solutions     map[string]core.Solution
+	matches       map[string]core.Match
+	conversations map[string]core.Conversation
+	skills        map[string]string
 }
 
 func newFake() *fakeStore {
 	return &fakeStore{
-		customers: map[string]core.Customer{},
-		suppliers: map[string]core.Supplier{},
-		solutions: map[string]core.Solution{},
-		matches:   map[string]core.Match{},
+		customers:     map[string]core.Customer{},
+		suppliers:     map[string]core.Supplier{},
+		solutions:     map[string]core.Solution{},
+		matches:       map[string]core.Match{},
+		conversations: map[string]core.Conversation{},
+		skills:        map[string]string{},
 	}
 }
 
@@ -133,7 +137,7 @@ func req(t *testing.T, h http.Handler, method, path, userID, body string) (*http
 }
 
 func TestAuthRequired(t *testing.T) {
-	h := Mux(newFake())
+	h := Mux(newFake(), nil)
 	w, _ := req(t, h, "GET", "/api/v1/customers", "", "")
 	if w.Code != 401 {
 		t.Fatalf("无 X-User-ID 应 401, got %d", w.Code)
@@ -146,7 +150,7 @@ func TestAuthRequired(t *testing.T) {
 
 func TestCustomerPermission(t *testing.T) {
 	f := newFake()
-	h := Mux(f)
+	h := Mux(f, nil)
 
 	// user2 建客户
 	body := `{"name":"XX科技","industry":"制造业"}`
@@ -185,7 +189,7 @@ func TestCustomerPermission(t *testing.T) {
 }
 
 func TestSupplierSolutionAdminOnly(t *testing.T) {
-	h := Mux(newFake())
+	h := Mux(newFake(), nil)
 
 	w, _ := req(t, h, "POST", "/api/v1/suppliers", "user2", `{"name":"云创科技"}`)
 	if w.Code != 403 {
@@ -211,7 +215,7 @@ func TestSupplierSolutionAdminOnly(t *testing.T) {
 
 func TestMatchScoreAndStatus(t *testing.T) {
 	f := newFake()
-	h := Mux(f)
+	h := Mux(f, nil)
 
 	f.suppliers["s-x"] = core.Supplier{ID: "s-x", Name: "云创"}
 	f.solutions["sol-x"] = core.Solution{ID: "sol-x", SupplierID: "s-x",
@@ -250,7 +254,7 @@ func TestMatchScoreAndStatus(t *testing.T) {
 }
 
 func TestDashboardAndAgentStub(t *testing.T) {
-	h := Mux(newFake())
+	h := Mux(newFake(), nil)
 	w, out := req(t, h, "GET", "/api/v1/stats/dashboard", "user2", "")
 	if w.Code != 200 || out["customers"].(float64) != 0 {
 		t.Fatalf("dashboard 异常: %d %v", w.Code, out)

@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"os"
@@ -10,9 +11,16 @@ import (
 	"github.com/andaoai/Nexus/internal/gitstore"
 )
 
-// Mux 构建全部路由。store 依赖注入，便于测试。
-func Mux(st gitstore.Store) http.Handler {
+// chatEngine AI 聊天引擎接口（*agent.Engine 实现）。
+type chatEngine interface {
+	Chat(ctx context.Context, systemPrompt, message, sessionID string) (result, newSessionID string, err error)
+}
+
+// Mux 构建全部路由。store/引擎 依赖注入，便于测试。
+func Mux(st gitstore.Store, eng chatEngine) http.Handler {
 	mux := http.NewServeMux()
+
+	registerConversationRoutes(mux, st, eng)
 
 	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		okJSON(w, map[string]any{"status": "ok", "time": time.Now()})

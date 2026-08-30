@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/andaoai/Nexus/internal/agent"
 	"github.com/andaoai/Nexus/internal/api"
 	"github.com/andaoai/Nexus/internal/config"
 	"github.com/andaoai/Nexus/internal/gitstore"
@@ -37,6 +38,14 @@ func main() {
 	}
 	go store.SyncLoop(ctx, 30*time.Second)
 
+	// AI 聊天引擎（claude CLI 无头模式）
+	eng := agent.New(agent.Config{
+		Bin:     cfg.LLM.Bin,
+		BaseURL: cfg.LLM.BaseURL,
+		APIKey:  cfg.LLM.APIKey,
+		Model:   cfg.LLM.Model,
+	})
+
 	// 内嵌 EasyTier 组网：失败仅告警，不影响 HTTP
 	if cfg.Mesh.Enabled {
 		m, err := mesh.Start(ctx, mesh.Config{
@@ -55,7 +64,7 @@ func main() {
 		}
 	}
 
-	srv := &http.Server{Addr: cfg.Addr, Handler: api.Mux(store), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Addr: cfg.Addr, Handler: api.Mux(store, eng), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

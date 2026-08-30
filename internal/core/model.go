@@ -71,6 +71,35 @@ type Match struct {
 // StatusMatch 匹配状态集合。
 var StatusMatch = []string{"待确认", "已确认", "已签约", "已放弃"}
 
+// Message 聊天消息。Role: user（执行者发言）/ assistant（AI 回复）/ system（错误标记等）。
+type Message struct {
+	Role    string    `json:"role"`
+	Author  string    `json:"author"` // user id 或 "ai"
+	Content string    `json:"content"`
+	At      time.Time `json:"at"`
+}
+
+// Conversation 一次围绕客户/供应商/通用主题的持续 AI 聊天会话。
+// 存储为 conversations/<owner>/<id>.json，整文件覆盖提交。
+type Conversation struct {
+	ID              string    `json:"id"`
+	Owner           string    `json:"owner"` // 会话创建者 user id
+	SubjectType     string    `json:"subject_type"` // customer / supplier / general
+	SubjectID       string    `json:"subject_id"`   // 关联实体 id，general 为空
+	SubjectName     string    `json:"subject_name"` // 冗余快照，列表展示用
+	Title           string    `json:"title"`
+	Skill           string    `json:"skill"` // 使用的技能名（skills/<name>.md）
+	ClaudeSessionID string    `json:"claude_session_id"` // claude CLI session，--resume 续接
+	Summary         string    `json:"summary"`           // AI 生成的进展摘要
+	SummaryAt       time.Time `json:"summary_at"`
+	Messages        []Message `json:"messages"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+// SubjectTypes 会话主题类型集合。
+var SubjectTypes = []string{"customer", "supplier", "general"}
+
 // ID 生成：前缀 + 6 位随机 base32（小写，去掉易混淆字符）。
 func NewID(prefix string) string {
 	const alphabet = "abcdefghijklmnopqrstuvwxyz234567"
