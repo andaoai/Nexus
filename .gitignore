@@ -1,0 +1,13 @@
+# Go
+bin/
+*.test
+
+# 环境变量与本地数据
+.env
+data/
+
+# 前端
+web/node_modules/
+# embed 产物（构建生成，保留目录占位）
+internal/api/webdist/*
+!internal/api/webdist/.gitkeep
