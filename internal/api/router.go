@@ -22,6 +22,7 @@ func Mux(st gitstore.Store, eng chatEngine) http.Handler {
 	mux := http.NewServeMux()
 
 	registerConversationRoutes(mux, st, eng)
+	registerContactRoutes(mux, st)
 
 	mux.HandleFunc("GET /api/v1/health", func(w http.ResponseWriter, r *http.Request) {
 		okJSON(w, map[string]any{"status": "ok", "time": time.Now()})

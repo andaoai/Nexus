@@ -71,6 +71,24 @@ type Match struct {
 // StatusMatch 匹配状态集合。
 var StatusMatch = []string{"待确认", "已确认", "已签约", "已放弃"}
 
+// Contact 联系人：客户/供应商组织里的具体的人（技术经理、销售、决策人…）。
+// 存储为 contacts/<id>.json。
+type Contact struct {
+	ID             string    `json:"id"`
+	Name           string    `json:"name"`
+	CompanyType    string    `json:"company_type"` // customer / supplier
+	CompanyID      string    `json:"company_id"`
+	CompanyName    string    `json:"company_name"` // 冗余快照，列表展示用
+	Role           string    `json:"role"`         // 技术经理 / 销售 / 技术总监 / 决策人…
+	Responsibility string    `json:"responsibility"` // 职责：负责报价 / 方案讲解 / 最终拍板
+	Phone          string    `json:"phone"`
+	Email          string    `json:"email"`
+	Notes          string    `json:"notes"` // 沟通风格、关注点等
+	Owner          string    `json:"owner"` // 建档人 user id
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
 // Message 聊天消息。Role: user（执行者发言）/ assistant（AI 回复）/ system（错误标记等）。
 type Message struct {
 	Role    string    `json:"role"`
@@ -87,6 +105,8 @@ type Conversation struct {
 	SubjectType     string    `json:"subject_type"` // customer / supplier / general
 	SubjectID       string    `json:"subject_id"`   // 关联实体 id，general 为空
 	SubjectName     string    `json:"subject_name"` // 冗余快照，列表展示用
+	ContactID       string    `json:"contact_id"`   // 可选：绑定到具体联系人（持续对话锚点）
+	ContactName     string    `json:"contact_name"` // 冗余快照
 	Title           string    `json:"title"`
 	Skill           string    `json:"skill"` // 使用的技能名（skills/<name>.md）
 	ClaudeSessionID string    `json:"claude_session_id"` // claude CLI session，--resume 续接

@@ -64,13 +64,17 @@ cd web && npm install && npm run dev
 | GET/POST | /matches | 匹配（POST 带 budget/desired_days/desired_stack，服务端算分） | 经理仅写自己的 |
 | PUT | /matches/{id} | 更新匹配状态 | 创建者或管理员 |
 | GET | /stats/dashboard | 仪表盘统计 | 全部 |
-| POST/GET | /conversations | 新建 / 列表 AI 聊天会话（`?all=1` 全局视图仅管理员） | owner 或管理员（all=1 仅管理员） |
-| GET | /conversations/{id} | 会话详情（含全部消息） | owner 或管理员 |
-| POST | /conversations/{id}/chat | 发消息 → claude CLI 回复 → 落库 | owner 或管理员 |
-| POST | /conversations/{id}/summary | AI 生成进展摘要（管理员统筹用） | owner 或管理员 |
-| POST | /conversations/{id}/link | 绑定会话对象（nexus-mcp 建档后自动调用） | owner 或管理员 |
+| POST/GET | /conversations | 新建 / 列表 AI 聊天会话（全员共享） | 全部 |
+| GET | /conversations/{id} | 会话详情（含全部消息，可接力续聊） | 全部 |
+| POST | /conversations/{id}/chat | 发消息 → claude CLI 回复 → 落库（resume 失效自动重建上下文） | 全部 |
+| POST | /conversations/{id}/summary | 规范化进展总结（走完整聊天管线，AI 边总结边补档案） | 全部 |
+| POST | /conversations/{id}/link | 绑定会话对象/联系人（nexus-mcp 建档后自动调用） | 全部 |
+| GET | /contacts | 联系人档案（`?company_type=&company_id=&q=` 过滤） | 全部 |
+| POST/PUT | /contacts | 新建 / 更新联系人 | 全部（团队公共档案） |
 | GET | /skills | AI 技能列表（skills/*.md 实时读数据仓库） | 全部 |
 | PUT | /admin/skills/{name} | 新建/更新技能 | 管理员 |
+| PUT | /skill-drafts/{name} | 提交技能草稿（AI 沉淀） | 全部 |
+| GET/POST | /admin/skill-drafts[/{name}/approve] | 草稿列表 / 转正 | 管理员 |
 | POST | /admin/sync | 手动同步数据仓库 | 管理员 |
 | GET | /admin/mesh/status | 组网状态 | 管理员 |
 
@@ -87,5 +91,6 @@ cd web && npm install && npm run dev
 | v0.2.0 | JWT 认证、updated_at 乐观锁 |
 | v0.3.0 | Element Plus 三栏布局完整前端 |
 | v0.4.0 | AI 聊天：claude CLI 无头多轮会话、skills 提示词沉淀、进展摘要与全局统筹（已上线） |
-| v0.5.0 | AI 自动建档（MCP 工具调用：聊天中自动创建/更新客户、供应商画像，已上线）；stream-json 流式回复 |
+| v0.5.0 | AI 自动建档（MCP 工具调用：聊天中自动创建/更新客户、供应商画像，已上线） |
+| v0.6.0 | 聊天档案体系：联系人实体 + 会话↔联系人关联 + 会话全员共享续聊 + resume 自愈 + 技能草稿区转正 + 规范化总结（已上线）；stream-json 流式回复 |
 | v1.0.0 | 安卓 App、业务流程闭环 |

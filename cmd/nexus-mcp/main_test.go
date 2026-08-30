@@ -67,8 +67,73 @@ func fakeAPI(t *testing.T, user string) (*server, map[string]map[string]any, map
 		json.NewEncoder(w).Encode(body)
 	})
 	mux.HandleFunc("POST /api/v1/conversations/cv-1/link", func(w http.ResponseWriter, r *http.Request) {
-		linked[readBody(r)["subject_id"].(string)] = true
+		body := readBody(r)
+		if sid, ok := body["subject_id"].(string); ok {
+			linked[sid] = true
+		}
+		if cid, ok := body["contact_id"].(string); ok {
+			linked[cid] = true
+		}
 		w.WriteHeader(200)
+	})
+	mux.HandleFunc("GET /api/v1/contacts", func(w http.ResponseWriter, r *http.Request) {
+		var list []map[string]any
+		for _, p := range store {
+			id, _ := p["id"].(string)
+			if !strings.HasPrefix(id, "p-") {
+				continue
+			}
+			// 简易 company_type/company_id 过滤
+			if ct := r.URL.Query().Get("company_type"); ct != "" && p["company_type"] != ct {
+				continue
+			}
+			if cid := r.URL.Query().Get("company_id"); cid != "" && p["company_id"] != cid {
+				continue
+			}
+			list = append(list, p)
+		}
+		json.NewEncoder(w).Encode(list)
+	})
+	mux.HandleFunc("POST /api/v1/contacts", func(w http.ResponseWriter, r *http.Request) {
+		body := readBody(r)
+		body["id"] = "p-new01"
+		store["p-new01"] = body
+		w.WriteHeader(201)
+		json.NewEncoder(w).Encode(body)
+	})
+	mux.HandleFunc("PUT /api/v1/contacts/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if _, ok := store[id]; !ok {
+			w.WriteHeader(404)
+			return
+		}
+		store[id] = readBody(r)
+		json.NewEncoder(w).Encode(store[id])
+	})
+	skills := map[string]string{}
+	drafts := map[string]string{}
+	mux.HandleFunc("PUT /api/v1/admin/skills/{name}", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("X-User-ID") != "user1" {
+			w.WriteHeader(403)
+			json.NewEncoder(w).Encode(map[string]string{"error": "需要管理员权限"})
+			return
+		}
+		var body struct {
+			Content string `json:"content"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		skills[r.PathValue("name")] = body.Content
+		w.WriteHeader(200)
+		json.NewEncoder(w).Encode(map[string]string{"status": "saved"})
+	})
+	mux.HandleFunc("PUT /api/v1/skill-drafts/{name}", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Content string `json:"content"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		drafts[r.PathValue("name")] = body.Content
+		w.WriteHeader(200)
+		json.NewEncoder(w).Encode(map[string]string{"status": "draft-saved"})
 	})
 
 	api := httptest.NewServer(mux)
@@ -149,4 +214,82 @@ func (s *server) callToolCapture(name string, args map[string]any) (string, bool
 		lastErr = text
 	}
 	return text, isErr
+}
+
+func TestSearchContacts(t *testing.T) {
+	s, store, _ := fakeAPI(t, "user2")
+	store["p-1"] = map[string]any{"id": "p-1", "name": "李工", "role": "技术经理",
+		"company_type": "customer", "company_id": "c-1", "company_name": "XX智造"}
+
+	text, isErr := s.callTool("search_contacts", map[string]any{"keyword": "李工"})
+	if isErr || !strings.Contains(text, "p-1") {
+		t.Fatalf("应命中已有联系人: %v %s", isErr, text)
+	}
+	text, _ = s.callTool("search_contacts", map[string]any{"keyword": "查无此人"})
+	if !strings.Contains(text, "未找到") {
+		t.Fatalf("未命中应提示可新建: %s", text)
+	}
+	// 按公司过滤
+	text, isErr = s.callTool("search_contacts", map[string]any{"company_id": "c-other"})
+	if isErr || !strings.Contains(text, "未找到") {
+		t.Fatalf("他公司过滤应无结果: %v %s", isErr, text)
+	}
+}
+
+func TestUpsertContactCreateAndLink(t *testing.T) {
+	s, _, linked := fakeAPI(t, "user2")
+
+	text, isErr := s.callTool("upsert_contact", map[string]any{
+		"name": "王经理", "company_type": "supplier", "company_id": "s-1",
+		"role": "销售", "responsibility": "负责报价",
+	})
+	if isErr || !strings.Contains(text, "p-new01") || !strings.Contains(text, "已创建") {
+		t.Fatalf("应创建联系人成功: %v %s", isErr, text)
+	}
+	if !linked["p-new01"] {
+		t.Fatal("新建联系人应自动关联到会话")
+	}
+
+	// 缺必填参数
+	_, isErr = s.callToolCapture("upsert_contact", map[string]any{"name": "张三"})
+	if !isErr || !strings.Contains(lastErr, "必填") {
+		t.Fatalf("缺 company 应报错: %v", isErr)
+	}
+}
+
+func TestUpsertContactUpdateMerges(t *testing.T) {
+	s, store, _ := fakeAPI(t, "user2")
+	store["p-1"] = map[string]any{"id": "p-1", "name": "李工", "role": "技术经理",
+		"company_type": "customer", "company_id": "c-1", "company_name": "XX智造", "phone": "13800000000"}
+
+	text, isErr := s.callTool("upsert_contact", map[string]any{
+		"name": "李工", "company_type": "customer", "company_id": "c-1",
+		"notes": "关注 API 兼容性",
+	})
+	if isErr || !strings.Contains(text, "已更新") {
+		t.Fatalf("同名同公司应走更新: %v %s", isErr, text)
+	}
+	if len(store) != 1 {
+		t.Fatalf("应更新而非新建, store=%v", store)
+	}
+}
+
+func TestSaveSkillPermission(t *testing.T) {
+	// manager → 草稿区
+	s, _, _ := fakeAPI(t, "user2")
+	text, isErr := s.callTool("save_skill", map[string]any{
+		"name": "Quote Tactics", "content": "报价话术…", "why": "多次复用",
+	})
+	if isErr || !strings.Contains(text, "草稿") {
+		t.Fatalf("manager 存技能应进草稿区: %v %s", isErr, text)
+	}
+
+	// admin → 正式技能
+	s1, _, _ := fakeAPI(t, "user1")
+	text, isErr = s1.callTool("save_skill", map[string]any{
+		"name": "quote-tactics", "content": "报价话术…",
+	})
+	if isErr || !strings.Contains(text, "正式技能") {
+		t.Fatalf("admin 存技能应直接生效: %v %s", isErr, text)
+	}
 }

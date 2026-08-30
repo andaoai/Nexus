@@ -154,6 +154,74 @@ func TestSupplierSolutionMatch(t *testing.T) {
 	}
 }
 
+func TestContactCRUD(t *testing.T) {
+	remote := newTestRemote(t)
+	s := openStore(t, remote, filepath.Join(t.TempDir(), "cache.git"))
+
+	p := core.Contact{ID: core.NewID("p"), Name: "李工", CompanyType: "customer",
+		CompanyID: "c-x", CompanyName: "测试科技", Role: "技术经理", Owner: "user2"}
+	if err := s.CreateContact(p, "user2"); err != nil {
+		t.Fatalf("CreateContact: %v", err)
+	}
+
+	got, err := s.GetContact(p.ID)
+	if err != nil || got.Role != "技术经理" {
+		t.Fatalf("GetContact: %v %+v", err, got)
+	}
+
+	// 按公司过滤
+	byCompany, err := s.ListContacts("customer", "c-x")
+	if err != nil || len(byCompany) != 1 {
+		t.Fatalf("ListContacts: %v %d", err, len(byCompany))
+	}
+	if none, _ := s.ListContacts("supplier", ""); len(none) != 0 {
+		t.Fatalf("supplier 过滤应无结果: %d", len(none))
+	}
+
+	got.Phone = "13800000000"
+	got.UpdatedAt = time.Now()
+	if err := s.UpdateContact(got, "user2"); err != nil {
+		t.Fatalf("UpdateContact: %v", err)
+	}
+	if p2, _ := s.GetContact(p.ID); p2.Phone != "13800000000" {
+		t.Fatalf("更新未生效: %+v", p2)
+	}
+}
+
+func TestSkillDraftApprove(t *testing.T) {
+	remote := newTestRemote(t)
+	s := openStore(t, remote, filepath.Join(t.TempDir(), "cache.git"))
+
+	if err := s.PutSkillDraft("quote-talk", "报价话术草稿", "user2"); err != nil {
+		t.Fatalf("PutSkillDraft: %v", err)
+	}
+	drafts, err := s.ListSkillDrafts()
+	if err != nil || len(drafts) != 1 || drafts[0].Name != "quote-talk" {
+		t.Fatalf("ListSkillDrafts: %v %+v", err, drafts)
+	}
+	// 草稿不算正式技能，GetSkill 拿不到
+	if _, err := s.GetSkill("quote-talk"); err != ErrNotFound {
+		t.Fatalf("正式区不应有 quote-talk, got %v", err)
+	}
+
+	// 转正：正式区可读，草稿消失
+	if err := s.ApproveSkillDraft("quote-talk", "user1"); err != nil {
+		t.Fatalf("ApproveSkillDraft: %v", err)
+	}
+	content, err := s.GetSkill("quote-talk")
+	if err != nil || content != "报价话术草稿" {
+		t.Fatalf("GetSkill 转正后: %v %q", err, content)
+	}
+	if left, _ := s.ListSkillDrafts(); len(left) != 0 {
+		t.Fatalf("转正后草稿应清空: %+v", left)
+	}
+
+	// 草稿名校验同样防路径穿越
+	if err := s.PutSkillDraft("../evil", "x", "user2"); err == nil {
+		t.Fatal("非法草稿名应被拒绝")
+	}
+}
+
 func TestAuthedURL(t *testing.T) {
 	got := authedURL("https://github.com/a/b.git", "tok")
 	want := "https://x-access-token:tok@github.com/a/b.git"

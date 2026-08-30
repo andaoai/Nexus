@@ -3,10 +3,10 @@ import { computed, nextTick, onMounted, ref } from 'vue'
 import {
   api, ApiError, USERS, currentUser, setCurrentUser,
   type Customer, type Supplier, type Solution, type Match,
-  type Conversation, type ChatMessage, type Skill,
+  type Conversation, type ChatMessage, type Skill, type Contact,
 } from './api'
 
-const tab = ref<'dashboard' | 'customers' | 'suppliers' | 'solutions' | 'matches' | 'chat'>('dashboard')
+const tab = ref<'dashboard' | 'customers' | 'suppliers' | 'solutions' | 'matches' | 'contacts' | 'chat'>('dashboard')
 const uid = ref(currentUser())
 const error = ref('')
 const isAdmin = computed(() => USERS.find(u => u.id === uid.value)?.role === 'admin')
@@ -133,9 +133,18 @@ function ownerName(id: string) { return USERS.find(u => u.id === id)?.name || id
 function solutionName(id: string) { return solutions.value.find(s => s.id === id)?.name || id }
 function customerName(id: string) { return customers.value.find(c => c.id === id)?.name || id }
 
+// ---- 联系人 ----
+const contacts = ref<Contact[]>([])
+const contactFilter = ref<{ company_type: string; q: string }>({ company_type: '', q: '' })
+async function loadContacts() {
+  await run(async () => {
+    contacts.value =
+      (await api.listContacts(contactFilter.value.company_type, '', contactFilter.value.q)) || []
+  })
+}
+
 // ---- AI 聊天 ----
 const conversations = ref<Conversation[]>([])
-const allConvs = ref(false) // admin 全局视图
 const activeConv = ref<Conversation | null>(null)
 const chatInput = ref('')
 const chatBusy = ref(false)
@@ -144,13 +153,14 @@ const convForm = ref<{ subject_type: string; subject_id: string; title: string; 
   { subject_type: 'general', subject_id: '', title: '', skill: '' }
 )
 const skills = ref<Skill[]>([])
+const skillDrafts = ref<Skill[]>([])
 const skillModal = ref<HTMLDialogElement>()
 const skillForm = ref<{ name: string; content: string }>({ name: '', content: '' })
 const chatWindow = ref<HTMLElement>()
 
 async function loadConversations() {
   await run(async () => {
-    conversations.value = (await api.listConversations(allConvs.value)) || []
+    conversations.value = (await api.listConversations()) || []
   })
 }
 async function openConv(c: Conversation) {
@@ -206,12 +216,25 @@ async function summarize() {
   await run(async () => {
     const res = await api.refreshSummary(activeConv.value!.id)
     activeConv.value!.summary = res.summary
+    activeConv.value!.messages.push(res.ai_message)
+    nextTick(scrollChat)
     await loadConversations()
+    await refresh() // 总结中 AI 可能补建档
   })
   chatBusy.value = false
 }
 async function loadSkills() {
   await run(async () => { skills.value = (await api.listSkills()) || [] })
+}
+async function loadSkillDrafts() {
+  if (!isAdmin.value) return
+  await run(async () => { skillDrafts.value = (await api.listSkillDrafts()) || [] })
+}
+async function approveDraft(d: Skill) {
+  await run(async () => {
+    await api.approveSkillDraft(d.name)
+    await Promise.all([loadSkillDrafts(), loadSkills()])
+  })
 }
 function editSkill(s?: Skill) {
   skillForm.value = s ? { name: s.name, content: s.content } : { name: '', content: '' }
@@ -232,11 +255,8 @@ function msgClass(m: ChatMessage) {
 }
 function switchTab(t: typeof tab.value) {
   tab.value = t
-  if (t === 'chat') { allConvs.value = false; loadConversations() }
-}
-function toggleAllConvs() {
-  allConvs.value = !allConvs.value
-  loadConversations()
+  if (t === 'chat') { loadConversations(); loadSkillDrafts() }
+  if (t === 'contacts') loadContacts()
 }
 
 function scoreTag(score: number) {
@@ -259,6 +279,7 @@ const matchStatuses = ['待确认', '已确认', '已签约', '已放弃']
       <button :class="{ active: tab === 'suppliers' }" @click="tab = 'suppliers'">供应商</button>
       <button :class="{ active: tab === 'solutions' }" @click="tab = 'solutions'">方案</button>
       <button :class="{ active: tab === 'matches' }" @click="tab = 'matches'">匹配</button>
+      <button :class="{ active: tab === 'contacts' }" @click="switchTab('contacts')">联系人</button>
       <button :class="{ active: tab === 'chat' }" @click="switchTab('chat')">AI 聊天</button>
     </nav>
     <select :value="uid" @change="switchUser(($event.target as HTMLSelectElement).value)">
@@ -380,6 +401,37 @@ const matchStatuses = ['待确认', '已确认', '已签约', '已放弃']
     </section>
   </main>
 
+  <!-- 联系人 -->
+  <section v-if="tab === 'contacts'" class="card">
+    <div class="conv-head">
+      <h2>联系人档案</h2>
+      <div style="display:flex;gap:8px;align-items:center">
+        <select v-model="contactFilter.company_type" @change="loadContacts">
+          <option value="">全部公司</option>
+          <option value="customer">客户侧</option>
+          <option value="supplier">供应商侧</option>
+        </select>
+        <input v-model="contactFilter.q" placeholder="搜姓名/角色/公司" @input="loadContacts" />
+      </div>
+    </div>
+    <table style="margin-top:12px">
+      <thead><tr><th>姓名</th><th>公司</th><th>角色</th><th>职责</th><th>电话</th><th>邮箱</th><th>备注</th><th>建档人</th></tr></thead>
+      <tbody>
+        <tr v-for="p in contacts" :key="p.id">
+          <td><b>{{ p.name }}</b></td>
+          <td>{{ p.company_name }}（{{ p.company_type === 'customer' ? '客户' : '供应商' }}）</td>
+          <td>{{ p.role }}</td>
+          <td>{{ p.responsibility }}</td>
+          <td>{{ p.phone }}</td>
+          <td>{{ p.email }}</td>
+          <td>{{ p.notes }}</td>
+          <td>{{ ownerName(p.owner) }}</td>
+        </tr>
+      </tbody>
+    </table>
+    <p v-if="!contacts.length" class="muted" style="text-align:center">暂无联系人 · 在 AI 聊天中聊到具体的人时会自动建档</p>
+  </section>
+
   <!-- AI 聊天 -->
   <main class="container" v-if="tab === 'chat'">
     <p v-if="error" class="error-msg">{{ error }}</p>
@@ -388,9 +440,7 @@ const matchStatuses = ['待确认', '已确认', '已签约', '已放弃']
       <aside class="card conv-list">
         <div class="conv-head">
           <b>会话</b>
-          <label v-if="isAdmin" class="muted" style="font-size:12px">
-            <input type="checkbox" :checked="allConvs" @change="toggleAllConvs" /> 全局视图
-          </label>
+          <span class="muted" style="font-size:12px">全员共享</span>
         </div>
         <button class="btn primary" style="width:100%" @click="newConversation">+ 新建会话</button>
         <div
@@ -400,7 +450,7 @@ const matchStatuses = ['待确认', '已确认', '已签约', '已放弃']
         >
           <b>{{ c.title || subjectLabel(c) }}</b>
           <span class="muted" style="font-size:12px">
-            {{ subjectLabel(c) }} · {{ ownerName(c.owner) }}
+            {{ subjectLabel(c) }}<template v-if="c.contact_name"> · {{ c.contact_name }}</template> · {{ ownerName(c.owner) }}
           </span>
           <span v-if="c.summary" class="muted conv-summary">{{ c.summary }}</span>
         </div>
@@ -417,6 +467,15 @@ const matchStatuses = ['待确认', '已确认', '已签约', '已放弃']
             <span class="muted conv-summary">{{ s.content.slice(0, 40) }}</span>
           </div>
           <p v-if="!skills.length" class="muted" style="text-align:center;font-size:12px">未配置技能（使用内置默认）</p>
+          <!-- 草稿区（AI 沉淀的待转正技能） -->
+          <template v-if="skillDrafts.length">
+            <div class="conv-head" style="margin-top:8px"><b>草稿待转正</b></div>
+            <div v-for="d in skillDrafts" :key="d.name" class="conv-item">
+              <b>{{ d.name }}</b>
+              <span class="muted conv-summary">{{ d.content.slice(0, 40) }}</span>
+              <button class="btn" style="padding:2px 8px;margin-top:4px" @click="approveDraft(d)">转正</button>
+            </div>
+          </template>
         </template>
       </aside>
 
@@ -427,7 +486,10 @@ const matchStatuses = ['待确认', '已确认', '已签约', '已放弃']
             <span v-if="activeConv.subject_name" class="tag gray" style="margin-left:8px">
               {{ activeConv.subject_type === 'customer' ? '客户' : '供应商' }} · {{ activeConv.subject_name }}
             </span>
-            <span v-else class="muted" style="font-size:12px;margin-left:8px">未绑定对象 · 聊到客户/供应商时 AI 会自动建档</span>
+            <span v-if="activeConv.contact_name" class="tag gray" style="margin-left:8px">
+              👤 {{ activeConv.contact_name }}
+            </span>
+            <span v-if="!activeConv.subject_name" class="muted" style="font-size:12px;margin-left:8px">未绑定对象 · 聊到客户/供应商/联系人时 AI 会自动建档关联</span>
           </div>
           <button class="btn" :disabled="chatBusy || !activeConv.messages.length" @click="summarize">
             {{ chatBusy ? 'AI 思考中…' : '生成进展摘要' }}

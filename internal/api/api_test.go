@@ -21,7 +21,9 @@ type fakeStore struct {
 	solutions     map[string]core.Solution
 	matches       map[string]core.Match
 	conversations map[string]core.Conversation
+	contacts      map[string]core.Contact
 	skills        map[string]string
+	skillDrafts   map[string]string
 }
 
 func newFake() *fakeStore {
@@ -31,7 +33,9 @@ func newFake() *fakeStore {
 		solutions:     map[string]core.Solution{},
 		matches:       map[string]core.Match{},
 		conversations: map[string]core.Conversation{},
+		contacts:      map[string]core.Contact{},
 		skills:        map[string]string{},
+		skillDrafts:   map[string]string{},
 	}
 }
 
@@ -111,6 +115,74 @@ func (f *fakeStore) Counts() (int, int, int, int, int) {
 }
 func (f *fakeStore) SyncNow(ctx context.Context) error  { return nil }
 func (f *fakeStore) SyncLoop(ctx context.Context, d time.Duration) {}
+
+func (f *fakeStore) ListContacts(companyType, companyID string) ([]core.Contact, error) {
+	var out []core.Contact
+	for _, p := range f.contacts {
+		if companyType != "" && p.CompanyType != companyType {
+			continue
+		}
+		if companyID != "" && p.CompanyID != companyID {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+func (f *fakeStore) GetContact(id string) (core.Contact, error) {
+	if p, ok := f.contacts[id]; ok {
+		return p, nil
+	}
+	return core.Contact{}, gitstore.ErrNotFound
+}
+func (f *fakeStore) CreateContact(p core.Contact, _ string) error { f.contacts[p.ID] = p; return nil }
+func (f *fakeStore) UpdateContact(p core.Contact, _ string) error {
+	if _, ok := f.contacts[p.ID]; !ok {
+		return gitstore.ErrNotFound
+	}
+	f.contacts[p.ID] = p
+	return nil
+}
+func (f *fakeStore) ListSkills() ([]gitstore.Skill, error) {
+	var out []gitstore.Skill
+	for name, content := range f.skills {
+		out = append(out, gitstore.Skill{Name: name, Content: content})
+	}
+	return out, nil
+}
+func (f *fakeStore) GetSkill(name string) (string, error) {
+	if c, ok := f.skills[name]; ok {
+		return c, nil
+	}
+	return "", gitstore.ErrNotFound
+}
+func (f *fakeStore) PutSkill(name, content, _ string) error { f.skills[name] = content; return nil }
+func (f *fakeStore) PutSkillDraft(name, content, _ string) error {
+	f.skillDrafts[name] = content
+	return nil
+}
+func (f *fakeStore) ListSkillDrafts() ([]gitstore.Skill, error) {
+	var out []gitstore.Skill
+	for name, content := range f.skillDrafts {
+		out = append(out, gitstore.Skill{Name: name, Content: content})
+	}
+	return out, nil
+}
+func (f *fakeStore) GetSkillDraft(name string) (string, error) {
+	if c, ok := f.skillDrafts[name]; ok {
+		return c, nil
+	}
+	return "", gitstore.ErrNotFound
+}
+func (f *fakeStore) ApproveSkillDraft(name, _ string) error {
+	content, ok := f.skillDrafts[name]
+	if !ok {
+		return gitstore.ErrNotFound
+	}
+	f.skills[name] = content
+	delete(f.skillDrafts, name)
+	return nil
+}
 
 // req 执行请求并返回响应。
 func req(t *testing.T, h http.Handler, method, path, userID, body string) (*httptest.ResponseRecorder, map[string]any) {

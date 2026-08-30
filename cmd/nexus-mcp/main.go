@@ -187,6 +187,60 @@ func toolDefs() []map[string]any {
 				"required": []string{"name"},
 			},
 		},
+		{
+			"name": "search_contacts",
+			"description": "搜索联系人档案（客户/供应商公司里的具体的人：技术经理、销售、决策人…），用于提到某个人之前查重。可按关键词或所属公司过滤。",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"keyword":      map[string]any{"type": "string", "description": "姓名/角色/公司名关键词"},
+					"company_type": map[string]any{"type": "string", "enum": []string{"customer", "supplier"}},
+					"company_id":   map[string]any{"type": "string", "description": "限定某公司下的联系人"},
+				},
+			},
+		},
+		{
+			"name": "upsert_contact",
+			"description": "创建或更新联系人档案（某个公司里的具体的人及其角色、职责、联系方式、沟通风格）。同名同公司已存在则合并更新，否则创建并关联到当前会话。对话中出现新关键人时用它建档。",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name":           map[string]any{"type": "string", "description": "姓名（必填）"},
+					"company_type":   map[string]any{"type": "string", "enum": []string{"customer", "supplier"}, "description": "所属公司类型（必填）"},
+					"company_id":     map[string]any{"type": "string", "description": "所属公司 id，如 c-xxxx / s-xxxx（必填）"},
+					"role":           map[string]any{"type": "string", "description": "角色：技术经理/销售/技术总监/决策人…"},
+					"responsibility": map[string]any{"type": "string", "description": "职责：负责报价/方案讲解/最终拍板…"},
+					"phone":          map[string]any{"type": "string"},
+					"email":          map[string]any{"type": "string"},
+					"notes":          map[string]any{"type": "string", "description": "沟通风格、关注点等"},
+				},
+				"required": []string{"name", "company_type", "company_id"},
+			},
+		},
+		{
+			"name": "link_contact",
+			"description": "把当前会话绑定到某个联系人（其所属公司也会自动成为会话对象），之后对话将围绕此人持续展开。",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"contact_id": map[string]any{"type": "string", "description": "联系人 id，如 p-xxxx"},
+				},
+				"required": []string{"contact_id"},
+			},
+		},
+		{
+			"name": "save_skill",
+			"description": "把对话中沉淀出的可复用方法论/话术/流程保存为 AI 技能提示词。管理员直接生效；其他成员进入草稿区，待管理员转正。",
+			"inputSchema": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name":    map[string]any{"type": "string", "description": "技能名，英文小写短横线，如 quote-tactics（必填）"},
+					"content": map[string]any{"type": "string", "description": "技能提示词全文（Markdown，写给 AI 的指令）（必填）"},
+					"why":     map[string]any{"type": "string", "description": "一句话说明为什么值得沉淀"},
+				},
+				"required": []string{"name", "content"},
+			},
+		},
 	}
 }
 
@@ -201,6 +255,14 @@ func (s *server) callTool(name string, args map[string]any) (text string, isErr 
 		return s.linkSubject(args)
 	case "upsert_supplier":
 		return s.upsertSupplier(args)
+	case "search_contacts":
+		return s.searchContacts(args)
+	case "upsert_contact":
+		return s.upsertContact(args)
+	case "link_contact":
+		return s.linkContact(args)
+	case "save_skill":
+		return s.saveSkill(args)
 	default:
 		return "未知工具: " + name, true
 	}
@@ -340,6 +402,116 @@ func (s *server) upsertSupplier(args map[string]any) (string, bool) {
 	}
 	b, _ := json.MarshalIndent(created, "", "  ")
 	return "已创建供应商「" + name + "」（" + id + "）并绑定到当前会话：\n" + string(b), false
+}
+
+// ---- 联系人与技能工具 ----
+
+// searchContacts 按关键词/公司过滤联系人。
+func (s *server) searchContacts(args map[string]any) (string, bool) {
+	q := "/api/v1/contacts?"
+	if ct := str(args["company_type"]); ct != "" {
+		q += "company_type=" + ct + "&"
+	}
+	if cid := str(args["company_id"]); cid != "" {
+		q += "company_id=" + cid
+	}
+	var all []map[string]any
+	s.apiGet(q, &all)
+
+	kw := strings.ToLower(str(args["keyword"]))
+	var hits []map[string]any
+	for _, p := range all {
+		if kw == "" || matchKw(kw, p["name"], p["role"], p["company_name"], p["notes"]) {
+			hits = append(hits, p)
+		}
+	}
+	if len(hits) == 0 {
+		return "未找到匹配的联系人档案，可以新建。", false
+	}
+	b, _ := json.MarshalIndent(hits, "", "  ")
+	return "找到 " + fmt.Sprint(len(hits)) + " 位联系人：\n" + string(b), false
+}
+
+// upsertContact 同名同公司查重 → 更新合并或创建 → 新建的关联到当前会话。
+func (s *server) upsertContact(args map[string]any) (string, bool) {
+	name := strings.TrimSpace(str(args["name"]))
+	ctype, cid := str(args["company_type"]), str(args["company_id"])
+	if name == "" || (ctype != "customer" && ctype != "supplier") || cid == "" {
+		return "name、company_type（customer/supplier）、company_id 必填", true
+	}
+	var all []map[string]any
+	s.apiGet("/api/v1/contacts?company_id="+cid+"&company_type="+ctype, &all)
+	if existing := matchByName(all, name); existing != nil {
+		merged := mergeContact(existing, args)
+		if err := s.apiDo("PUT", "/api/v1/contacts/"+str(existing["id"]), merged, nil); err != nil {
+			return "更新联系人失败: " + err.Error(), true
+		}
+		return fmt.Sprintf("已更新联系人「%s」（%s）档案，非空字段已合并。", name, str(existing["id"])), false
+	}
+	var created map[string]any
+	if err := s.apiDo("POST", "/api/v1/contacts", args, &created); err != nil {
+		return "创建联系人失败: " + err.Error(), true
+	}
+	id := str(created["id"])
+	if s.convID != "" {
+		_ = s.apiDo("POST", "/api/v1/conversations/"+s.convID+"/link",
+			map[string]any{"contact_id": id}, nil)
+	}
+	b, _ := json.MarshalIndent(created, "", "  ")
+	return "已创建联系人「" + name + "」（" + id + "）并关联到当前会话：\n" + string(b), false
+}
+
+// linkContact 把会话绑定到联系人。
+func (s *server) linkContact(args map[string]any) (string, bool) {
+	id := str(args["contact_id"])
+	if id == "" {
+		return "contact_id 必填", true
+	}
+	if s.convID == "" {
+		return "当前会话上下文缺失（NEXUS_CONV_ID 未设置）", true
+	}
+	if err := s.apiDo("POST", "/api/v1/conversations/"+s.convID+"/link",
+		map[string]any{"contact_id": id}, nil); err != nil {
+		return "绑定联系人失败: " + err.Error(), true
+	}
+	return "已把会话绑定到联系人 " + id + "。", false
+}
+
+// saveSkill 管理员直接保存为正式技能；无权限则落入草稿区待转正。
+func (s *server) saveSkill(args map[string]any) (string, bool) {
+	name := strings.TrimSpace(str(args["name"]))
+	content := str(args["content"])
+	if name == "" || content == "" {
+		return "name 与 content 必填", true
+	}
+	name = strings.ReplaceAll(strings.ReplaceAll(strings.ToLower(name), " ", "-"), ".md", "")
+	if err := s.apiDo("PUT", "/api/v1/admin/skills/"+name,
+		map[string]any{"content": content}, nil); err == nil {
+		return fmt.Sprintf("已保存为正式技能「%s」，之后所有会话均可使用。", name), false
+	}
+	if err := s.apiDo("PUT", "/api/v1/skill-drafts/"+name,
+		map[string]any{"content": content}, nil); err != nil {
+		return "保存技能失败: " + err.Error(), true
+	}
+	note := ""
+	if why := str(args["why"]); why != "" {
+		note = "（" + why + "）"
+	}
+	return fmt.Sprintf("已提交技能草稿「%s」%s，待管理员转正后生效。", name, note), false
+}
+
+// mergeContact 已有联系人 + 非空参数（姓名/公司不可改）。
+func mergeContact(existing map[string]any, args map[string]any) map[string]any {
+	merged := map[string]any{}
+	for k, v := range existing {
+		merged[k] = v
+	}
+	for _, k := range []string{"role", "responsibility", "phone", "email", "notes"} {
+		if v, ok := args[k]; ok && v != nil && fmt.Sprint(v) != "" {
+			merged[k] = v
+		}
+	}
+	return merged
 }
 
 // matchByName 精确匹配优先，其次互相包含。

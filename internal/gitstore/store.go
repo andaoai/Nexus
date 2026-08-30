@@ -63,10 +63,20 @@ type Store interface {
 	CreateConversation(c core.Conversation, actor string) error
 	UpdateConversation(c core.Conversation, actor string) error
 
-	// AI 技能（skills/<name>.md，管理员维护）
+	// 联系人（contacts/<id>.json）
+	ListContacts(companyType, companyID string) ([]core.Contact, error)
+	GetContact(id string) (core.Contact, error)
+	CreateContact(c core.Contact, actor string) error
+	UpdateContact(c core.Contact, actor string) error
+
+	// AI 技能（skills/<name>.md，管理员维护；草稿 skills/drafts/<name>.md）
 	ListSkills() ([]Skill, error)
 	GetSkill(name string) (string, error)
 	PutSkill(name, content, actor string) error
+	PutSkillDraft(name, content, actor string) error
+	ListSkillDrafts() ([]Skill, error)
+	GetSkillDraft(name string) (string, error)
+	ApproveSkillDraft(name, actor string) error
 
 	// Counts 仪表盘统计。
 	Counts() (customers, suppliers, solutions, matches, deals int)
@@ -253,6 +263,7 @@ func matchPath(m core.Match) string       { return dirMatches + "/" + m.ID + ".j
 func conversationPath(c core.Conversation) string {
 	return dirConversations + "/" + c.Owner + "/" + c.ID + ".json"
 }
+func contactPath(c core.Contact) string { return dirContacts + "/" + c.ID + ".json" }
 
 func marshal(v any) ([]byte, error) { return core.JSON(v) }
 
@@ -429,9 +440,45 @@ func (s *gitStore) UpdateConversation(c core.Conversation, actor string) error {
 		actor, fmt.Sprintf("%s: update conversation %s", actor, c.ID))
 }
 
-// ---- Skill（skills/<name>.md，每次请求实时读 head rev，保证最新）----
+// ---- Contact ----
 
-func skillPath(name string) string { return "skills/" + name + ".md" }
+func (s *gitStore) ListContacts(companyType, companyID string) ([]core.Contact, error) {
+	return s.ix.ListContacts(companyType, companyID), nil
+}
+
+func (s *gitStore) GetContact(id string) (core.Contact, error) {
+	if p, ok := s.ix.GetContact(id); ok {
+		return p, nil
+	}
+	return core.Contact{}, ErrNotFound
+}
+
+func (s *gitStore) CreateContact(p core.Contact, actor string) error {
+	data, err := marshal(p)
+	if err != nil {
+		return err
+	}
+	return s.commitAndPush(context.Background(), []FileOp{{Path: contactPath(p), Data: data}},
+		actor, fmt.Sprintf("%s: create contact %s", actor, p.ID))
+}
+
+func (s *gitStore) UpdateContact(p core.Contact, actor string) error {
+	if _, ok := s.ix.GetContact(p.ID); !ok {
+		return ErrNotFound
+	}
+	data, err := marshal(p)
+	if err != nil {
+		return err
+	}
+	return s.commitAndPush(context.Background(), []FileOp{{Path: contactPath(p), Data: data}},
+		actor, fmt.Sprintf("%s: update contact %s", actor, p.ID))
+}
+
+// ---- Skill（skills/<name>.md，每次请求实时读 head rev，保证最新）----
+// 草稿区 skills/drafts/<name>.md：manager 可写，admin 转正。
+
+func skillPath(name string) string     { return "skills/" + name + ".md" }
+func skillDraftPath(name string) string { return "skills/drafts/" + name + ".md" }
 
 // skillName 校验技能名：仅允许字母数字-_，防路径穿越。
 func skillName(raw string) (string, error) {
@@ -459,8 +506,8 @@ func (s *gitStore) ListSkills() ([]Skill, error) {
 	}
 	var skills []Skill
 	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		if line == "" {
-			continue
+		if line == "" || strings.HasSuffix(line, "drafts") {
+			continue // 草稿目录不算正式技能
 		}
 		base := filepath.Base(line)
 		name, err := skillName(base)
@@ -505,6 +552,88 @@ func (s *gitStore) PutSkill(name, content, actor string) error {
 	return s.commitAndPush(context.Background(),
 		[]FileOp{{Path: skillPath(name), Data: []byte(content)}},
 		actor, fmt.Sprintf("%s: %s skill %s", actor, verb, name))
+}
+
+func (s *gitStore) PutSkillDraft(name, content, actor string) error {
+	name, err := skillName(name)
+	if err != nil {
+		return err
+	}
+	verb := "create"
+	if _, err := s.GetSkillDraft(name); err == nil {
+		verb = "update"
+	}
+	return s.commitAndPush(context.Background(),
+		[]FileOp{{Path: skillDraftPath(name), Data: []byte(content)}},
+		actor, fmt.Sprintf("%s: %s skill draft %s", actor, verb, name))
+}
+
+// ListSkillDrafts 草稿区列表（skills/drafts/ 下的 .md）。
+func (s *gitStore) ListSkillDrafts() ([]Skill, error) {
+	ctx := context.Background()
+	rev := s.repo.HeadRev(ctx)
+	if rev == "" {
+		return nil, nil
+	}
+	out, err := gitOut(ctx, s.repo.dir, "ls-tree", "--name-only", rev, "skills/drafts/")
+	if err != nil {
+		return nil, err
+	}
+	var drafts []Skill
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		name, err := skillName(filepath.Base(line))
+		if err != nil {
+			continue
+		}
+		content, err := s.GetSkillDraft(name)
+		if err != nil {
+			continue
+		}
+		drafts = append(drafts, Skill{Name: name, Content: content})
+	}
+	return drafts, nil
+}
+
+func (s *gitStore) GetSkillDraft(name string) (string, error) {
+	name, err := skillName(name)
+	if err != nil {
+		return "", err
+	}
+	ctx := context.Background()
+	rev := s.repo.HeadRev(ctx)
+	if rev == "" {
+		return "", ErrNotFound
+	}
+	out, err := gitOutBytes(ctx, s.repo.dir, "cat-file", "blob", rev+":"+skillDraftPath(name))
+	if err != nil {
+		return "", ErrNotFound
+	}
+	return string(out), nil
+}
+
+// ApproveSkillDraft 草稿转正：一个提交内写正式区 + 删草稿。
+func (s *gitStore) ApproveSkillDraft(name, actor string) error {
+	name, err := skillName(name)
+	if err != nil {
+		return err
+	}
+	content, err := s.GetSkillDraft(name)
+	if err != nil {
+		return err
+	}
+	verb := "create"
+	if _, err := s.GetSkill(name); err == nil {
+		verb = "update"
+	}
+	return s.commitAndPush(context.Background(),
+		[]FileOp{
+			{Path: skillPath(name), Data: []byte(content)},
+			{Path: skillDraftPath(name), Delete: true},
+		},
+		actor, fmt.Sprintf("%s: approve skill draft %s (%s)", actor, name, verb))
 }
 
 func mustMarshal(v any) []byte {

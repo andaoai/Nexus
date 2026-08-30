@@ -118,6 +118,8 @@ export interface Conversation {
   subject_type: 'customer' | 'supplier' | 'general'
   subject_id: string
   subject_name: string
+  contact_id: string
+  contact_name: string
   title: string
   skill: string
   claude_session_id: string
@@ -126,6 +128,20 @@ export interface Conversation {
   messages: ChatMessage[]
   created_at: string
   updated_at: string
+}
+
+export interface Contact {
+  id: string
+  name: string
+  company_type: 'customer' | 'supplier'
+  company_id: string
+  company_name: string
+  role: string
+  responsibility: string
+  phone: string
+  email: string
+  notes: string
+  owner: string
 }
 
 export interface Skill {
@@ -157,9 +173,8 @@ export const api = {
       '/api/v1/stats/dashboard'
     ),
 
-  // AI 聊天
-  listConversations: (all = false) =>
-    call<Conversation[]>('GET', `/api/v1/conversations${all ? '?all=1' : ''}`),
+  // AI 聊天（会话全员共享，列表即全部）
+  listConversations: () => call<Conversation[]>('GET', '/api/v1/conversations'),
   getConversation: (id: string) => call<Conversation>('GET', `/api/v1/conversations/${id}`),
   createConversation: (c: { subject_type: string; subject_id?: string; title?: string; skill?: string }) =>
     call<Conversation>('POST', '/api/v1/conversations', c),
@@ -168,10 +183,20 @@ export const api = {
       'POST', `/api/v1/conversations/${id}/chat`, { content }
     ),
   refreshSummary: (id: string) =>
-    call<{ summary: string }>('POST', `/api/v1/conversations/${id}/summary`),
+    call<{ summary: string; ai_message: ChatMessage }>('POST', `/api/v1/conversations/${id}/summary`),
+
+  // 联系人
+  listContacts: (companyType = '', companyId = '', q = '') =>
+    call<Contact[]>(
+      'GET',
+      `/api/v1/contacts?company_type=${companyType}&company_id=${companyId}&q=${encodeURIComponent(q)}`
+    ),
 
   // AI 技能
   listSkills: () => call<Skill[]>('GET', '/api/v1/skills'),
   putSkill: (name: string, content: string) =>
     call('PUT', `/api/v1/admin/skills/${encodeURIComponent(name)}`, { content }),
+  listSkillDrafts: () => call<Skill[]>('GET', '/api/v1/admin/skill-drafts'),
+  approveSkillDraft: (name: string) =>
+    call('POST', `/api/v1/admin/skill-drafts/${encodeURIComponent(name)}/approve`),
 }

@@ -18,11 +18,12 @@ import (
 
 // entityKind 实体类型与仓库目录的映射。
 const (
-	dirCustomers    = "customers"
-	dirSuppliers    = "suppliers"
-	dirSolutions    = "solutions"
-	dirMatches      = "matches"
+	dirCustomers     = "customers"
+	dirSuppliers     = "suppliers"
+	dirSolutions     = "solutions"
+	dirMatches       = "matches"
 	dirConversations = "conversations"
+	dirContacts      = "contacts"
 )
 
 type index struct {
@@ -33,6 +34,7 @@ type index struct {
 	solutions     map[string]core.Solution
 	matches       map[string]core.Match
 	conversations map[string]core.Conversation
+	contacts      map[string]core.Contact
 }
 
 func newIndex() *index {
@@ -42,6 +44,7 @@ func newIndex() *index {
 		solutions:     map[string]core.Solution{},
 		matches:       map[string]core.Match{},
 		conversations: map[string]core.Conversation{},
+		contacts:      map[string]core.Contact{},
 	}
 }
 
@@ -82,6 +85,7 @@ func (ix *index) Rebuild(ctx context.Context, repo *Repo, rev string) error {
 	ix.solutions = fresh.solutions
 	ix.matches = fresh.matches
 	ix.conversations = fresh.conversations
+	ix.contacts = fresh.contacts
 	ix.rev = rev
 	return nil
 }
@@ -116,6 +120,11 @@ func (ix *index) load(path string, data []byte) {
 		var c core.Conversation
 		if json.Unmarshal(data, &c) == nil && c.ID != "" {
 			ix.conversations[c.ID] = c
+		}
+	case dirContacts:
+		var p core.Contact
+		if json.Unmarshal(data, &p) == nil && p.ID != "" {
+			ix.contacts[p.ID] = p
 		}
 	}
 }
@@ -223,6 +232,31 @@ func (ix *index) GetConversation(id string) (core.Conversation, bool) {
 	return c, ok
 }
 
+// ListContacts 联系人列表。companyType/companyID 为空时不过滤。
+func (ix *index) ListContacts(companyType, companyID string) []core.Contact {
+	ix.mu.RLock()
+	defer ix.mu.RUnlock()
+	var out []core.Contact
+	for _, p := range ix.contacts {
+		if companyType != "" && p.CompanyType != companyType {
+			continue
+		}
+		if companyID != "" && p.CompanyID != companyID {
+			continue
+		}
+		out = append(out, p)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out
+}
+
+func (ix *index) GetContact(id string) (core.Contact, bool) {
+	ix.mu.RLock()
+	defer ix.mu.RUnlock()
+	p, ok := ix.contacts[id]
+	return p, ok
+}
+
 func (ix *index) Counts() (customers, suppliers, solutions, matches, deals int) {
 	ix.mu.RLock()
 	defer ix.mu.RUnlock()
@@ -265,6 +299,8 @@ func (ix *index) deleteByPath(path string) {
 		delete(ix.matches, id)
 	case dirConversations:
 		delete(ix.conversations, id)
+	case dirContacts:
+		delete(ix.contacts, id)
 	}
 }
 
